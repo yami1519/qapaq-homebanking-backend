@@ -85,11 +85,241 @@ def registrar_homebanking(
                 {"pkcliente": cliente["pkcliente"], "username": dni, "password_hash": password_hash},
             ).mappings().one()
 
+            asegurar_cuenta_ahorro_cliente(conn, cliente["pkcliente"])
+
             return {**cliente, "pkusuario": usuario["pkusuario"], "username": dni}
     except IntegrityError as exc:
         if conn.in_transaction():
             conn.rollback()
+        mensaje = str(getattr(exc, "orig", exc)).lower()
+        if "usuarios_homebanking" not in mensaje:
+            raise
         raise CuentaHomebankingExistente from exc
+
+
+def asegurar_cuenta_ahorro_cliente(conn: Connection, pkcliente: int) -> dict:
+    """Asegura una cuenta AH activa para el cliente durante el registro."""
+    cuenta_existente = _buscar_cuenta_ah_activa(conn, pkcliente)
+    if cuenta_existente is not None:
+        return cuenta_existente
+
+    conn.execute(text("SELECT pg_advisory_xact_lock(hashtext('dcuentaahorro:AH'))"))
+
+    cuenta_existente = _buscar_cuenta_ah_activa(conn, pkcliente)
+    if cuenta_existente is not None:
+        return cuenta_existente
+
+    nuevo_codigo = conn.execute(
+        text(
+            """
+            SELECT 'AH' || LPAD(
+                (
+                    COALESCE(
+                        MAX(
+                            NULLIF(
+                                REGEXP_REPLACE(codcuentaahorro, '[^0-9]', '', 'g'),
+                                ''
+                            )::int
+                        ),
+                        0
+                    ) + 1
+                )::text,
+                8,
+                '0'
+            ) AS nuevo_codigo
+            FROM dcuentaahorro
+            WHERE UPPER(TRIM(codcuentaahorro)) LIKE 'AH%'
+              AND UPPER(TRIM(codcuentaahorro)) ~ '^AH[0-9]{8}$'
+            """
+        )
+    ).scalar_one()
+
+    nueva_cuenta = conn.execute(
+        text(
+            """
+            INSERT INTO dcuentaahorro (codcuentaahorro, pkcliente)
+            VALUES (:codcuentaahorro, :pkcliente)
+            RETURNING pkcuentaahorro, codcuentaahorro, pkcliente
+            """
+        ),
+        {"codcuentaahorro": nuevo_codigo, "pkcliente": pkcliente},
+    ).mappings().one()
+
+    resultado = conn.execute(
+        text(
+            """
+            WITH plantilla AS (
+                SELECT f.*
+                FROM fcuentaahorro f
+                JOIN dcuentaahorro ca ON ca.pkcuentaahorro = f.pkcuentaahorro
+                JOIN destadocuenta ec ON ec.pkestadocuenta = f.pkestadocuenta
+                JOIN dtipocuentaahorro tca ON tca.pktipocuentaahorro = f.pktipocuentaahorro
+                WHERE UPPER(TRIM(ca.codcuentaahorro)) LIKE 'AH%'
+                  AND UPPER(TRIM(ca.codcuentaahorro)) ~ '^AH[0-9]{8}$'
+                  AND f.periododia = (
+                      SELECT MAX(f2.periododia)
+                      FROM fcuentaahorro f2
+                      WHERE f2.pkcuentaahorro = ca.pkcuentaahorro
+                  )
+                  AND TRIM(ec.codestadocuenta) = '01'
+                  AND TRIM(tca.codtipocuentaahorro) = 'AC'
+                ORDER BY f.periododia DESC, ca.pkcuentaahorro ASC
+                LIMIT 1
+            )
+            INSERT INTO fcuentaahorro (
+                periododia,
+                pkcuentaahorro,
+                pkproductoahorro,
+                pkmoneda,
+                pktipocuentaahorro,
+                pktipotasaahorro,
+                pkcliente,
+                pkauxiliar,
+                pkoperador,
+                pkadministrador,
+                pkjeferegional,
+                pkagencia,
+                pkestadocuenta,
+                tipocambio,
+                montosaldocapitaltotal,
+                montosaldointerestotal,
+                montosaldopromediototal,
+                fechaaperturacuenta,
+                montodepositoapertura,
+                tasainterescuenta,
+                tasaefectivaanual,
+                nrotitulares,
+                nrofirmas,
+                flagexoneracionimpuesto,
+                flagexoneracioncomision,
+                flagcuentapromocion,
+                nrooperacioneslibres,
+                fechaultimaconsulta,
+                flag_ac,
+                montosaldodisponible_ac,
+                montosaldominimo_ac,
+                montosaldocontable_ac,
+                montointeresacuantcap_ac,
+                nrooperaciones_ac,
+                flag_pf,
+                fechavigencia_pf,
+                montosaldocapital_pf,
+                nrodiasplazofijo_pf,
+                montointerespactado_pf,
+                montointerespagado_pf,
+                montointeresdevengado_pf,
+                tasapagada_pf,
+                numerorenovacion_pf,
+                flag_cts,
+                montocapital_cts,
+                montointeres_cts,
+                montocapitalintangible_cts,
+                montointeresintangible_cts,
+                codempleador_cts,
+                codbancoorigentraslado_cts,
+                codbancodestinotraslado_cts,
+                flag_ap,
+                montocapital_ap,
+                montocuota_ap,
+                nrocuota_ap,
+                tasaincentivo_ap,
+                fechavigencia_ap,
+                fecultactualizacion
+            )
+            SELECT
+                p.periododia,
+                :pkcuentaahorro,
+                p.pkproductoahorro,
+                p.pkmoneda,
+                p.pktipocuentaahorro,
+                p.pktipotasaahorro,
+                :pkcliente,
+                p.pkauxiliar,
+                p.pkoperador,
+                p.pkadministrador,
+                p.pkjeferegional,
+                p.pkagencia,
+                p.pkestadocuenta,
+                p.tipocambio,
+                0,
+                0,
+                0,
+                CURRENT_DATE,
+                0,
+                p.tasainterescuenta,
+                p.tasaefectivaanual,
+                1,
+                1,
+                p.flagexoneracionimpuesto,
+                p.flagexoneracioncomision,
+                p.flagcuentapromocion,
+                0,
+                NULL,
+                'S',
+                0,
+                p.montosaldominimo_ac,
+                0,
+                0,
+                0,
+                'N',
+                NULL,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                'N',
+                0,
+                0,
+                0,
+                0,
+                NULL,
+                NULL,
+                NULL,
+                'N',
+                0,
+                0,
+                0,
+                0,
+                NULL,
+                now()
+            FROM plantilla p
+            RETURNING pkcuentaahorro
+            """
+        ),
+        {"pkcuentaahorro": nueva_cuenta["pkcuentaahorro"], "pkcliente": pkcliente},
+    ).mappings().first()
+    if resultado is None:
+        raise RuntimeError("No existe una plantilla AH activa para crear cuenta de ahorro")
+
+    return dict(nueva_cuenta)
+
+
+def _buscar_cuenta_ah_activa(conn: Connection, pkcliente: int) -> dict | None:
+    row = conn.execute(
+        text(
+            """
+            SELECT ca.pkcuentaahorro, ca.codcuentaahorro, ca.pkcliente
+            FROM dcuentaahorro ca
+            JOIN fcuentaahorro f ON f.pkcuentaahorro = ca.pkcuentaahorro
+            JOIN destadocuenta ec ON ec.pkestadocuenta = f.pkestadocuenta
+            WHERE ca.pkcliente = :pkcliente
+              AND UPPER(TRIM(ca.codcuentaahorro)) LIKE 'AH%'
+              AND UPPER(TRIM(ca.codcuentaahorro)) ~ '^AH[0-9]{8}$'
+              AND f.periododia = (
+                  SELECT MAX(f2.periododia)
+                  FROM fcuentaahorro f2
+                  WHERE f2.pkcuentaahorro = ca.pkcuentaahorro
+              )
+              AND TRIM(ec.codestadocuenta) = '01'
+            LIMIT 1
+            """
+        ),
+        {"pkcliente": pkcliente},
+    ).mappings().first()
+    return dict(row) if row else None
 
 
 def _buscar_cliente_por_dni(conn: Connection, dni: str) -> dict | None:
