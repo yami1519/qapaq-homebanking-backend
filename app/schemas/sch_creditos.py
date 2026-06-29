@@ -1,6 +1,7 @@
 """Schemas pydantic para solicitud de crédito."""
 from decimal import Decimal
 from typing import Literal
+from typing import Optional
 
 from pydantic import BaseModel, Field
 
@@ -20,3 +21,10 @@ class SolicitudCreditoResponse(BaseModel):
     estado: str
     montosolicitud: Decimal
     plazo: int
+    semaforo: Optional[str] = None
+    resultado: Optional[str] = None
+    tea_sugerida: Optional[float] = None
+    tem_sugerida: Optional[float] = None
+    cuota_estimada: Optional[float] = None
+    rds: Optional[float] = None
+    observaciones: list[str] = Field(default_factory=list)

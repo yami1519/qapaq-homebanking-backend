@@ -34,9 +34,14 @@ def solicitar(
     except ValueError as e:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
 
+    estado = res.get("estado", "En Evaluación")
+    mensaje = "Solicitud registrada (En Evaluación)"
+    if estado == "Rechazado":
+        mensaje = "Solicitud registrada como NO APTO por capacidad de pago"
+
     return {
-        "mensaje": "Solicitud registrada (En Evaluación)",
-        "estado": "En Evaluación",
+        "mensaje": mensaje,
+        "estado": estado,
         "montosolicitud": montosolicitud,
         "plazo": plazo,
         **res,
